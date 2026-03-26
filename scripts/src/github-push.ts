@@ -153,7 +153,21 @@ async function main() {
   const treeEntries: { path: string; mode: string; type: string; sha: string }[] = [];
   let successCount = 0;
   let failCount = 0;
-  const CONCURRENCY = 8;
+  const CONCURRENCY = 4;
+
+  async function createBlob(content: string, encoding: "utf-8" | "base64", retries = 3): Promise<{ status: number; data: unknown }> {
+    for (let attempt = 0; attempt < retries; attempt++) {
+      const result = await githubRequest(
+        `/repos/${OWNER}/${REPO}/git/blobs`,
+        "POST",
+        { content, encoding }
+      );
+      if (result.status !== 429) return result;
+      // Wait before retry: 2s, 4s, 8s
+      await new Promise((r) => setTimeout(r, 2000 * Math.pow(2, attempt)));
+    }
+    return { status: 429, data: { message: "Rate limited after retries" } };
+  }
 
   async function processFile(filePath: string) {
     const relPath = relative(WORKSPACE_ROOT, filePath);
@@ -174,19 +188,15 @@ async function main() {
       return;
     }
 
-    const { status, data } = await githubRequest(
-      `/repos/${OWNER}/${REPO}/git/blobs`,
-      "POST",
-      { content, encoding }
-    );
+    const { status, data } = await createBlob(content, encoding);
 
     if (status !== 201) {
-      console.error(`  ❌ ${relPath}: ${data?.message || status}`);
+      console.error(`  ❌ ${relPath}: ${(data as { message?: string })?.message || status}`);
       failCount++;
       return;
     }
 
-    treeEntries.push({ path: relPath, mode: "100644", type: "blob", sha: data.sha });
+    treeEntries.push({ path: relPath, mode: "100644", type: "blob", sha: (data as { sha: string }).sha });
     successCount++;
     if (successCount % 30 === 0) {
       process.stdout.write(`  ✓ ${successCount}/${files.length} files uploaded...\n`);
